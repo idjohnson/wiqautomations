@@ -1,0 +1,151 @@
+# Add User Pipeline
+
+trigger:
+- wia-adduser
+
+schedules:
+- cron: "*/15 * * * *"
+  displayName: 15m WI Check
+  branches:
+   include:
+     - wia-adduser
+  always: true
+
+pool:
+  vmImage: 'ubuntu-18.04'
+
+variables:
+- name: Org_Name
+  value: 'princessking'
+- name: affector
+  value: isaac.johnson@gmail.com
+- name: LicenseType
+  value: express
+- name: ThisPipelineID
+  value: 80
+
+stages:
+  - stage: parse
+    jobs:
+      - job: parse_work_item
+        variables:
+          job_supportUserWIQueryID: 5110cb1b-b7ae-4406-843f-f2aeb835830a # AzDOUserSupport
+        displayName: start_n_sync
+        continueOnError: false
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Azure CLI - wiq AddSPToAzure'
+            inputs:
+              azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: 'az boards query --organization https://dev.azure.com/$(Org_Name)/ --id $(job_supportUserWIQueryID) -o json  | jq ''.[] | .id'' | tr ''\n'' '','' > ids.txt'
+            env:
+              AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+          - task: AzureCLI@2
+            displayName: 'Azure CLI - Pipeline Semaphore'
+            inputs:
+              azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: 'az pipelines build list --project HelloWorldPrj --definition-ids $(ThisPipelineID) --org https://dev.azure.com/$(Org_Name)/ -o table > $(Build.StagingDirectory)/pipelinestate.txt'
+            env:
+              AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+          - bash: |
+              #!/bin/bash
+              set +x
+              # take comma sep list and set a var (remove trailing comma if there)
+              echo "##vso[task.setvariable variable=WISTOPROCESS]"`cat ids.txt | sed 's/,$//'` > t.o
+              set -x
+              cat t.o
+            displayName: 'Set WISTOPROCESS'
+          - bash: |
+             set -x
+             export
+
+             set +x
+
+             export IFS=","
+             read -a strarr <<< "$(WISTOPROCESS)"
+
+             # Print each value of the array by using the loop
+             export tval="{"
+
+             for val in "${strarr[@]}";
+             do
+               export tval="${tval}'process$val':{'wi':'$val'}, "
+             done
+
+             set -x
+             echo "... task.setvariable variable=mywis;isOutput=true]$tval" | sed 's/..$/}/'
+             set +x
+             if [[ "$(WISTOPROCESS)" == "" ]]; then  
+                echo "##vso[task.setvariable variable=mywis;isOutput=true]{}" > ./t.o
+             else
+                echo "##vso[task.setvariable variable=mywis;isOutput=true]$tval" | sed 's/..$/}/' > ./t.o
+             fi
+
+             # regardless of above, if we detect another queued "notStarted" or "inProgress" job, just die.. dont double process
+             # this way if an existing job is taking a while, we just bail out on subsequent builds (gracefully)
+             export tVarNS="`cat $(Build.StagingDirectory)/pipelinestate.txt | grep -v $(Build.BuildID) | grep notStarted | head -n1 | tr -d '\n'`"
+             export tVarIP="`cat $(Build.StagingDirectory)/pipelinestate.txt | grep -v $(Build.BuildID) | grep inProgress | head -n1 | tr -d '\n'`"
+
+             if [[ "$tVarNS" == "" ]]; then
+                 echo "No one else is NotStarted"
+             else
+                 echo "##vso[task.setvariable variable=mywis;isOutput=true]{}" > ./t.o
+             fi
+             if [[ "$tVarIP" == "" ]]; then
+                 echo "No one else is InProgress"
+             else
+               echo "##vso[task.setvariable variable=mywis;isOutput=true]{}" > ./t.o
+             fi
+
+             set -x
+             cat ./t.o
+
+            name: mtrx
+            displayName: 'create mywis var'
+          - bash: |
+             set -x
+             export
+            displayName: 'debug'
+
+      - job: runner
+        dependsOn: parse_work_item
+        strategy:
+          matrix: $[ dependencies.parse_work_item.outputs['mtrx.mywis']]
+        steps:
+          - template: tmpl-parse-details.yml
+          - bash: |
+             #!/bin/bash
+             set -x
+
+             echo $(wi)
+
+             if [[ "$(BADPROJECT)" == "yes" ]]; then
+                echo "ERROR: Invalid Project Specified"
+                # fail so we dont update in Notification step
+                exit 1
+             else
+               if [[ "$(wi)" == "" ]]; then 
+                   echo "yup no wi"
+               else 
+                   ./add_user.sh $(AzureDevOpsAutomationPAT) $(WIUSER) "$(WIPROJECT) Team" $(WIPROJECT) $(WILICENSE)
+               fi
+             fi
+            displayName: 'Add User to Proejct'
+            env:
+              AzureDevOpsAutomationPAT: $(AzureDevOpsAutomationPAT)
+          - task: AzureCLI@2
+            displayName: 'Azure CLI  - WI Notification'
+            condition: and(succeeded(), ne(variables['wi'], ''))
+            inputs:
+              azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: 'az boards work-item update --organization https://dev.azure.com/$(Org_Name)/ --id $(wi) --state Resolved --assigned-to $(affector) --discussion "Processed with pipeline run $(Build.BuildNumber). Created $(WIUSER) in project $(WIPROJECT)."'
+            env:
+              AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)

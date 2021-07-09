@@ -1,0 +1,171 @@
+
+steps:
+- bash: |
+    mkdir -p $(Pipeline.Workspace)/variables
+  displayName: 'create variables dir'
+- task: AzureCLI@2
+  displayName: 'Azure CLI - enable autoinstall extension'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az config set extension.use_dynamic_install=yes_without_prompt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+- task: AzureCLI@2
+  displayName: 'Azure CLI - WI State'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az boards work-item show --organization https://dev.azure.com/$(Org_Name)/ --id $(wi) | jq ''.fields."System.State"'' | sed ''s/^"\(.*\)"$/\1/'' > $(Pipeline.Workspace)/variables/state.txt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+- task: AzureCLI@2
+  displayName: 'Azure CLI  - WI Desc'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az boards work-item show --organization https://dev.azure.com/$(Org_Name)/ --id $(wi) | jq ''.fields."System.Description"'' | sed ''s/&nbsp;/ /g'' | sed ''s/<[^>]*>//g'' | sed ''s/^"\(.*\)"$/\1/'' > $(Pipeline.Workspace)/variables/basic_desc.txt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+- task: AzureCLI@2
+  displayName: 'Azure CLI  - WI Requestor'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az boards work-item show --organization https://dev.azure.com/$(Org_Name)/ --id $(wi) | jq ''.fields."System.CreatedBy".uniqueName'' | sed ''s/^"\(.*\)"$/\1/'' > $(Pipeline.Workspace)/variables/requestor.txt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+- task: AzureCLI@2
+  displayName: 'Azure CLI  - WI Requestor DisplayName'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az boards work-item show --organization https://dev.azure.com/$(Org_Name)/ --id $(wi) | jq ''.fields."System.CreatedBy".displayName'' | sed ''s/^"\(.*\)"$/\1/'' > $(Pipeline.Workspace)/variables/requestor_displayname.txt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+
+- bash: |
+    set -x
+    ls -ltra
+    cd $(Pipeline.Workspace)/variables
+    cat *.txt
+    cat state.txt
+    cat basic_desc.txt
+    cat requestor.txt
+  displayName: 'Bash Script - show values from WI'
+
+- bash: |
+    # Parse Actionable Data
+    set -x
+
+    cat $(Pipeline.Workspace)/variables/basic_desc.txt | grep 'manager: ' | sed 's/.*manager:\(.*\)user:.*/\1/' | sed 's/ //g' > $(Pipeline.Workspace)/variables/manager.txt
+    cat $(Pipeline.Workspace)/variables/basic_desc.txt | grep 'user: ' | sed 's/.*user: \(.*\)license:.*/\1/' > $(Pipeline.Workspace)/variables/user.txt
+    cat $(Pipeline.Workspace)/variables/basic_desc.txt | grep 'license: ' | sed 's/.*license: \(.*\)project:.*/\1/' > $(Pipeline.Workspace)/variables/license.txt
+    cat $(Pipeline.Workspace)/variables/basic_desc.txt | grep 'project: ' | sed 's/.*project: \(.*\)tps-enabled:.*/\1/' > $(Pipeline.Workspace)/variables/project.txt
+    cat $(Pipeline.Workspace)/variables/basic_desc.txt | grep 'tps-enabled: ' | sed 's/.*tps-enabled:\(.*\)/\1/' | sed 's/ //g' > $(Pipeline.Workspace)/variables/tps-enabled.txt
+    
+
+    cd $(Pipeline.Workspace)/variables/
+    cat manager.txt
+    cat user.txt
+    cat license.txt
+    cat project.txt
+    cat tps-enabled.txt
+    
+  displayName: 'Bash Script - parse request'      
+- bash: |
+    #!/bin/bash
+    set +x
+    
+    if [ -f $(Pipeline.Workspace)/variables/state.txt ]; then
+      echo "##vso[task.setvariable variable=WISTATE]"`cat $(Pipeline.Workspace)/variables/state.txt  | head -n1` > t.o
+    else
+      echo "##vso[task.setvariable variable=WISTATE]none" > t.o
+      exit 1
+    fi
+    
+    if [ -f $(Pipeline.Workspace)/variables/requestor.txt ]; then
+      echo "##vso[task.setvariable variable=WIREQUESTOR]"`cat $(Pipeline.Workspace)/variables/requestor.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WIREQUESTOR]none" >> t.o
+      exit 1
+    fi
+    
+    if [ -f $(Pipeline.Workspace)/variables/requestor_displayname.txt ]; then
+      echo "##vso[task.setvariable variable=WIREQUESTORDN]"`cat $(Pipeline.Workspace)/variables/requestor_displayname.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WIREQUESTORDN]none" >> t.o
+      exit 1
+    fi
+    
+    ### unique to this type of support
+
+    if [ -f $(Pipeline.Workspace)/variables/manager.txt ]; then
+      echo "##vso[task.setvariable variable=WIMANAGER]"`cat $(Pipeline.Workspace)/variables/manager.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WIMANAGER]none" >> t.o
+      exit 1
+    fi
+
+    if [ -f $(Pipeline.Workspace)/variables/user.txt ]; then
+      echo "##vso[task.setvariable variable=WIUSER]"`cat $(Pipeline.Workspace)/variables/user.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WIUSER]none" >> t.o
+      exit 1
+    fi
+
+    if [ -f $(Pipeline.Workspace)/variables/license.txt ]; then
+      echo "##vso[task.setvariable variable=WILICENSE]"`cat $(Pipeline.Workspace)/variables/license.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WILICENSE]stakeholder" >> t.o
+    fi
+
+    if [ -f $(Pipeline.Workspace)/variables/project.txt ]; then
+      echo "##vso[task.setvariable variable=WIPROJECT]"`cat $(Pipeline.Workspace)/variables/project.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WIPROJECT]none" >> t.o
+    fi
+
+    # do we require an cover letter on our outgoing TPS reports?
+    # do we need to send them another memo?
+    if [ -f $(Pipeline.Workspace)/variables/tps-enabled.txt ]; then
+      echo "##vso[task.setvariable variable=WITPS]"`cat $(Pipeline.Workspace)/variables/tps-enabled.txt  | head -n1` >> t.o
+    else
+      echo "##vso[task.setvariable variable=WITPS]true" >> t.o
+    fi
+
+    set -x
+    
+    cat t.o
+  env:
+      AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+  displayName: 'Set ENV Vars'   
+- task: AzureCLI@2
+  displayName: 'Azure CLI  - WI Check Project Validity'
+  inputs:
+    azureSubscription: 'Pay-As-You-Go(d955c0ba-13dc-44cf-a29a-8fed74cbb22d)'
+    scriptType: bash
+    scriptLocation: inlineScript
+    inlineScript: 'az devops project list -o json | jq -r ''.value | .[] | select(.name=="$(WIPROJECT)") | .name'' | tr -d ''\n'' > $(Pipeline.Workspace)/variables/validatedProject.txt'
+  env:
+    AZURE_DEVOPS_EXT_PAT: $(AzureDevOpsAutomationPAT)
+- bash: |
+    #!/bin/bash
+    set +x
+
+    if [[ "`cat $(Pipeline.Workspace)/variables/validatedProject.txt`" == "" ]]; then
+      echo "##vso[task.setvariable variable=BADPROJECT]yes" > t.o
+    else
+      echo "##vso[task.setvariable variable=BADPROJECT]no" > t.o
+    fi 
+    set -x
+    cat ./t.o
+  displayName: 'create BADPROJECT var'
